@@ -26,7 +26,7 @@ class Colors:
     # Ultralytics color palette https://ultralytics.com/
     def __init__(self):
         # hex = matplotlib.colors.TABLEAU_COLORS.values()
-        hexs = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
+        hexs = ('00D4BB', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', 'FF3838',
                 '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
         self.palette = [self.hex2rgb(f'#{c}') for c in hexs]
         self.n = len(self.palette)
@@ -39,9 +39,7 @@ class Colors:
     def hex2rgb(h):  # rgb order (PIL)
         return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
 
-
 colors = Colors()  # create instance for 'from utils.plots import colors'
-
 
 class Annotator:
     # YOLOv8 Annotator for train/val mosaics and jpgs and detect/hub inference annotations
@@ -116,7 +114,15 @@ class Annotator:
             im_gpu = im_gpu.to(masks.device)
         colors = torch.tensor(colors, device=masks.device, dtype=torch.float32) / 255.0  # shape(n,3)
         colors = colors[:, None, None]  # shape(n,1,1,3)
+        
+        # only get the largest area
+        masks = cv2.connectedComponents(masks.squeeze().cpu().numpy().astype('uint8'))
+        masks = (masks[1] == 1)
+        masks = torch.tensor(masks, device=im_gpu.device, dtype=torch.uint8)
+        masks = masks.unsqueeze(0)
+        
         masks = masks.unsqueeze(3)  # shape(n,h,w,1)
+
         masks_color = masks * (colors * alpha)  # shape(n,h,w,3)
 
         inv_alph_masks = (1 - masks * alpha).cumprod(0)  # shape(n,h,w,1)
@@ -205,21 +211,18 @@ def plot_labels(boxes, cls, names=(), save_dir=Path('')):
     matplotlib.use('Agg')
     plt.close()
 
-
-def save_one_box(xyxy, im, file=Path('im.jpg'), gain=1.02, pad=10, square=False, BGR=False, save=True):
+def save_one_box(xyxy, im, file=Path('im.jpg'), save=True):
     # Save image crop as {file} with crop size multiple {gain} and {pad} pixels. Save and/or return crop
-    b = xyxy2xywh(xyxy.view(-1, 4))  # boxes
-    if square:
-        b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1)  # attempt rectangle to square
-    b[:, 2:] = b[:, 2:] * gain + pad  # box wh * gain + pad
+    b = xyxy2xywh(xyxy.view(-1, 4)) # boxes
+    # b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1) # attempt rectangle to square
+    assert (b[:, 2:].cpu() == torch.tensor([[640, 640]])).all()
     xyxy = xywh2xyxy(b).long()
     clip_coords(xyxy, im.shape)
-    crop = im[int(xyxy[0, 1]):int(xyxy[0, 3]), int(xyxy[0, 0]):int(xyxy[0, 2]), ::(1 if BGR else -1)]
-    if save:
+    crop = im[int(xyxy[0, 1]):int(xyxy[0, 3]), int(xyxy[0, 0]):int(xyxy[0, 2])]
+    if save and (crop.shape==(640, 640, 3)):
         file.parent.mkdir(parents=True, exist_ok=True)  # make directory
         f = str(increment_path(file).with_suffix('.jpg'))
-        # cv2.imwrite(f, crop)  # save BGR, https://github.com/ultralytics/yolov5/issues/7007 chroma subsampling issue
-        Image.fromarray(crop[..., ::-1]).save(f, quality=95, subsampling=0)  # save RGB
+        Image.fromarray(crop[..., ::-1]).save(f)  # save RGB
     return crop
 
 
@@ -359,6 +362,16 @@ def plot_results(file='path/to/results.csv', dir='', segment=False):
     fig.savefig(save_dir / 'results.png', dpi=200)
     plt.close()
 
+def pad_xyxy(xyxy, size):
+    h, w = xyxy[0, 3] - xyxy[0, 1], xyxy[0, 2] - xyxy[0, 0]
+
+    if (h, w) != size:
+        xyxy[0, 2] += size[0] - w
+        xyxy[0, 3] += size[0] - h
+
+    assert (xyxy[0, 3] - xyxy[0, 1], xyxy[0, 2] - xyxy[0, 0]) == size
+
+    return xyxy
 
 def output_to_target(output, max_det=300):
     # Convert model output to target format [batch_id, class_id, x, y, w, h, conf] for plotting

@@ -32,6 +32,8 @@ from collections import defaultdict
 from pathlib import Path
 
 import cv2
+import json
+import pathlib
 
 from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.yolo.cfg import get_cfg
@@ -88,11 +90,14 @@ class BasePredictor:
         name = self.args.name or f'{self.args.mode}'
         self.save_dir = increment_path(Path(project) / name, exist_ok=self.args.exist_ok)
         if self.args.conf is None:
-            self.args.conf = 0.25  # default conf=0.25
+            self.args.conf = 0.4  # default conf=0.4
         self.done_warmup = False
         if self.args.show:
             self.args.show = check_imshow(warn=True)
 
+        # store the information for segmentation mask and two representation of BBox
+        self.info_container = defaultdict(dict)
+        
         # Usable if setup is done
         self.model = None
         self.data = self.args.data  # data_dict
@@ -220,6 +225,10 @@ class BasePredictor:
             # Print time (inference-only)
             if self.args.verbose:
                 LOGGER.info(f'{s}{self.dt[1].dt * 1E3:.1f}ms')
+
+        if self.args.save:
+            with open(pathlib.Path(self.txt_path).parent / "info.json", "w") as f:
+                json.dump(self.info_container, f, indent=4)
 
         # Release assets
         if isinstance(self.vid_writer[-1], cv2.VideoWriter):

@@ -1,10 +1,11 @@
 # Ultralytics YOLO 🚀, GPL-3.0 license
 
 import torch
+import pathlib
 
 from ultralytics.yolo.engine.results import Results
 from ultralytics.yolo.utils import DEFAULT_CFG, ROOT, ops
-from ultralytics.yolo.utils.plotting import colors, save_one_box
+from ultralytics.yolo.utils.plotting import colors, save_one_box, xywh2xyxy, pad_xyxy, clip_coords
 from ultralytics.yolo.v8.detect.predict import DetectionPredictor
 
 
@@ -63,6 +64,22 @@ class SegmentationPredictor(DetectionPredictor):
             return f'{log_string}(no detections), '
         det, mask = result.boxes, result.masks  # getting tensors TODO: mask mask,box inherit for tensor
 
+        # detect more than one result per frame
+        if len(det) >= 2:
+            det = det[0]
+        if len(mask) >= 2:
+            mask.masks = mask.masks[0][None]
+            # mask.segments = [mask.segments[0]] # error: cannot set attributes
+    
+        # make a square box label
+        det.xywh[0][2] = 640.0
+        det.xywh[0][3] = 640.0
+        xyxy = xywh2xyxy(det.xywh.view(1, 4)).int()
+        # clip boxes, just incase the box is moving out the image
+        clip_coords(xyxy, imc.shape)
+        xyxy = pad_xyxy(xyxy, (640, 640))
+        det.xyxy[0][0], det.xyxy[0][1], det.xyxy[0][2], det.xyxy[0][3] = xyxy[0][0], xyxy[0][1], xyxy[0][2], xyxy[0][3]
+
         # Print results
         for c in det.cls.unique():
             n = (det.cls == c).sum()  # detections per class
@@ -79,9 +96,15 @@ class SegmentationPredictor(DetectionPredictor):
             c, conf, id = int(d.cls), float(d.conf), None if d.id is None else int(d.id.item())
             if self.args.save_txt:  # Write to file
                 seg = mask.xyn[len(det) - j - 1].copy().reshape(-1)  # reversed mask.xyn, (n,2) to (n*2)
-                line = (c, *seg) + (conf, ) * self.args.save_conf + (() if id is None else (id, ))
-                with open(f'{self.txt_path}.txt', 'a') as f:
-                    f.write(('%g ' * len(line)).rstrip() % line + '\n')
+                bbox_xyxy = det.xyxy.clone().cpu().numpy().reshape(-1)
+                bbox_xywh = det.xywh.clone().cpu().numpy().reshape(-1)
+
+                name = pathlib.Path(self.txt_path + ".json").stem
+                self.info_container[name] = {}
+                self.info_container[name]['seg'] = seg.tolist()
+                self.info_container[name]['bbox_xyxy'] = bbox_xyxy.tolist()
+                self.info_container[name]['bbox_xywh'] = bbox_xywh.tolist()
+       
             if self.args.save or self.args.show:  # Add bbox to image
                 name = ('' if id is None else f'id:{id} ') + self.model.names[c]
                 label = None if self.args.hide_labels else (name if self.args.hide_conf else f'{name} {conf:.2f}')
@@ -90,8 +113,7 @@ class SegmentationPredictor(DetectionPredictor):
             if self.args.save_crop:
                 save_one_box(d.xyxy,
                              imc,
-                             file=self.save_dir / 'crops' / self.model.names[c] / f'{self.data_path.stem}.jpg',
-                             BGR=True)
+                             file=self.save_dir / 'crops' / self.model.names[c] / f'{self.data_path.stem}.jpg')
 
         return log_string
 

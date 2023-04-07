@@ -75,11 +75,9 @@ class DetectionPredictor(BasePredictor):
             if self.args.save_crop:
                 save_one_box(d.xyxy,
                              imc,
-                             file=self.save_dir / 'crops' / self.model.names[c] / f'{self.data_path.stem}.jpg',
-                             BGR=True)
+                             file=self.save_dir / 'crops' / self.model.names[c] / f'{self.data_path.stem}.jpg')
 
         return log_string
-
 
 def predict(cfg=DEFAULT_CFG, use_python=False):
     model = cfg.model or 'yolov8n.pt'
