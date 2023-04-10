@@ -90,7 +90,7 @@ class BasePredictor:
         name = self.args.name or f'{self.args.mode}'
         self.save_dir = increment_path(Path(project) / name, exist_ok=self.args.exist_ok)
         if self.args.conf is None:
-            self.args.conf = 0.4  # default conf=0.4
+            self.args.conf = 0.5  # default conf=0.5
         self.done_warmup = False
         if self.args.show:
             self.args.show = check_imshow(warn=True)

@@ -111,12 +111,9 @@ class SegmentationPredictor(DetectionPredictor):
                 if self.args.boxes:
                     self.annotator.box_label(d.xyxy.squeeze(), label, color=colors(c, True))
             if self.args.save_crop:
-                save_one_box(d.xyxy,
-                             imc,
-                             file=self.save_dir / 'crops' / self.model.names[c] / f'{self.data_path.stem}.jpg')
+                save_one_box(d.xyxy, imc, file=self.save_dir / 'crops' / self.model.names[c] / f'{self.data_path.stem}.jpg')
 
         return log_string
-
 
 def predict(cfg=DEFAULT_CFG, use_python=False):
     model = cfg.model or 'yolov8n-seg.pt'
@@ -130,7 +127,6 @@ def predict(cfg=DEFAULT_CFG, use_python=False):
     else:
         predictor = SegmentationPredictor(overrides=args)
         predictor.predict_cli()
-
 
 if __name__ == '__main__':
     predict()
