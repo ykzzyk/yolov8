@@ -225,6 +225,19 @@ def save_one_box(xyxy, im, file=Path('im.jpg'), save=True):
         Image.fromarray(crop[..., ::-1]).save(f)  # save RGB
     return crop
 
+def save_info(image, image_file):
+
+    if image is not None:
+        # make directory
+        image_file.parent.mkdir(parents=True, exist_ok=True)
+        f = str(increment_path(image_file).with_suffix('.png'))
+        filename = Path(f).stem
+        Image.fromarray(image).save(f)  # save RGB
+        
+    else:
+        filename = None
+
+    return filename
 
 @threaded
 def plot_images(images,

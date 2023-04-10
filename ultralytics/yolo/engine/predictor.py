@@ -32,8 +32,12 @@ from collections import defaultdict
 from pathlib import Path
 
 import cv2
+import copy
+import numpy as np
 import json
 import pathlib
+import vision6D as vis
+import os
 
 from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.yolo.cfg import get_cfg
@@ -56,6 +60,7 @@ STREAM_WARNING = """
             probs = r.probs  # Class probabilities for classification outputs
 """
 
+GIT_ROOT = pathlib.Path(os.path.abspath(__file__)).parent.parent.parent.parent.parent
 
 class BasePredictor:
     """
@@ -100,6 +105,7 @@ class BasePredictor:
         
         # Usable if setup is done
         self.model = None
+        self.side = self.args.side # set the side of the ossicles
         self.data = self.args.data  # data_dict
         self.imgsz = None
         self.device = None
@@ -137,6 +143,103 @@ class BasePredictor:
         for _ in gen:  # running CLI inference without accumulating any outputs (do not modify)
             pass
 
+    
+    def project_pose_cpu(self, image_source, predicted_pose, ossicles_path, facial_nerve_path, chorda_path):
+        app = vis.App(off_screen=True)
+        app.load_image(image_source)
+        app.set_transformation_matrix(predicted_pose)
+        app.set_image_opacity(0.8)
+        app.set_mesh_opacity(0.999)
+        app.load_meshes({'ossicles': ossicles_path, 'facial_nerve': facial_nerve_path, 'chorda': chorda_path})
+        app.bind_meshes("ossicles", "g")
+        app.bind_meshes("chorda", "h")
+        app.bind_meshes("facial_nerve", "j")
+        app.set_reference("ossicles")
+        render_image = app.plot()
+
+        return render_image
+    
+    def transform_vertices(self, vertices, r, t):
+        transformed_vertices = r.reshape(1, 3, 3) @ vertices.reshape(vertices.shape[0], 3, 1) + t.reshape(1, 3, 1)
+        return transformed_vertices.squeeze(-1) # make sure output shape is (B, P, 3)
+    
+    """
+    def project_pose_gpu(self, frame, predicted_pose, ossicles_path, facial_nerve_path, chorda_path):
+
+        # Setup
+        if torch.cuda.is_available(): 
+            device = torch.device("cuda:0")
+            torch.cuda.set_device(device)
+        else: device = torch.device("cpu")
+        
+        meshobjs = []
+        for meshpath in [ossicles_path, facial_nerve_path, chorda_path]:
+            with open(meshpath, "rb") as fid: mesh = vis.utils.meshread(fid)
+            orient = mesh.orient / np.array([1,2,3])
+            mesh.vertices = mesh.vertices * np.expand_dims(mesh.sz, axis=1) * np.expand_dims(orient, axis=1)
+            verts_rgb_colors = torch.tensor(vis.utils.color_mesh(mesh.vertices.T)).float().unsqueeze(0).cuda()
+
+            # de-couple the pose, and use rot and t seperately! 
+            flip_xy_rot = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
+            rot = predicted_pose[:3, :3]
+            t = predicted_pose[:3, -1].reshape((-1, 1))
+            mesh.vertices = self.transform_vertices(mesh.vertices.T, flip_xy_rot@rot, flip_xy_rot@t)
+            
+            verts = torch.tensor(mesh.vertices).float().unsqueeze(0).cuda()
+            faces = torch.tensor(mesh.triangles.T).float().unsqueeze(0).cuda()
+            textures = pytorch3d.renderer.TexturesVertex(verts_features=verts_rgb_colors)
+            mesh = pytorch3d.structures.Meshes(verts=verts, faces=faces, textures=textures)
+            meshobjs.append(mesh)
+            
+        # Join all the meshes as a scene
+        meshes = pytorch3d.structures.join_meshes_as_scene(meshobjs, include_textures=True)
+
+        # Initialize a camera.
+        R, T = pytorch3d.renderer.cameras.look_at_view_transform(-500, 0, 0, device=device)
+        cameras = pytorch3d.renderer.cameras.FoVPerspectiveCameras(device=device, R=R, T=T, znear=0.01, zfar=1000.01, fov=1.2375407233957483, degrees=True) # values from pyvista
+        
+        # Define the settings for rasterization and shading. 
+        raster_settings = pytorch3d.renderer.RasterizationSettings(image_size=(1080, 1920))
+
+        # Create a Phong renderer by composing a rasterizer and a shader.
+        # pytorch3d.renderer.blending.BlendParams.background_color = (1, 1, 1) # default background color white
+        pytorch3d.renderer.blending.BlendParams.sigma = 0.8
+        pytorch3d.renderer.blending.BlendParams.gamma = 0.5
+        
+        # initial the lights to be None by setting it to 1 and 0
+        lights = pytorch3d.renderer.lighting.DirectionalLights(ambient_color=((1, 1, 1), ), diffuse_color=((0, 0, 0), ), specular_color=((0, 0, 0), ), direction=((0, 0, 0), ), device=device)
+        
+        # materials = pytorch3d.renderer.Materials(device=device, ambient_color=((1, 1, 1), ), diffuse_color=((1, 1, 1), ), specular_color=((1, 1, 1), ), shininess=0)
+
+        # create the renderer
+        renderer = pytorch3d.renderer.MeshRenderer(rasterizer=pytorch3d.renderer.MeshRasterizer(raster_settings=raster_settings),
+                                                shader=pytorch3d.renderer.SoftPhongShader(device=device, lights=lights)) #, materials=materials))
+
+        # render images given the camera parameters
+        res = renderer(meshes, cameras=cameras)
+        
+        image = res[0, ..., :3].cpu().numpy()
+        
+        render_image = (frame * image).astype('uint8')
+        
+        # # the rendered mesh is bright, but we cannot see through the rendered objects
+        # frame = np.where(scene != [1, 1, 1], [1, 1, 1], frame/255) # make the frame ranges from [0, 1]
+        # rendered_scene = ((frame * scene) * 255).astype('uint8')
+
+        return render_image
+    """
+
+    def load_info(self, pathname):
+
+        identifier = pathname.split('.')[1]
+
+        ossicles_path = GIT_ROOT / "ossicles_6D_pose_estimation" / "data" / "surgical_planning" / pathname / "mesh" / f"{identifier}_{self.side}_ossicles_processed.mesh"
+        facial_nerve_path = GIT_ROOT / "ossicles_6D_pose_estimation" / "data" / "surgical_planning" / pathname / "mesh" / f"{identifier}_{self.side}_facial_nerve_processed.mesh"
+        chorda_path = GIT_ROOT / "ossicles_6D_pose_estimation" / "data" / "surgical_planning" / pathname / "mesh" / f"{identifier}_{self.side}_chorda_processed.mesh"
+        gt_pose_path = GIT_ROOT / "ossicles_6D_pose_estimation" / "data" / "gt_poses" / f"{identifier}_{self.side}_gt_pose.npy"
+        
+        return ossicles_path, facial_nerve_path, chorda_path, gt_pose_path
+
     def setup_source(self, source):
         self.imgsz = check_imgsz(self.args.imgsz, stride=self.model.stride, min_dim=2)  # check image size
         if self.args.task == 'classify':
@@ -154,7 +257,10 @@ class BasePredictor:
                                                   len(self.dataset) > 1000 or  # images
                                                   any(getattr(self.dataset, 'video_flag', [False]))):  # videos
             LOGGER.warning(STREAM_WARNING)
+        
         self.vid_path, self.vid_writer = [None] * self.dataset.bs, [None] * self.dataset.bs
+        self.projection_vid_path, self.projection_vid_writer = [None] * self.dataset.bs, [None] * self.dataset.bs
+        self.render_image_vid_path, self.render_image_vid_writer = [None] * self.dataset.bs, [None] * self.dataset.bs
 
     @smart_inference_mode()
     def stream_inference(self, source=None, model=None):
@@ -177,6 +283,22 @@ class BasePredictor:
 
         self.seen, self.windows, self.dt, self.batch = 0, [], (ops.Profile(), ops.Profile(), ops.Profile()), None
         self.run_callbacks('on_predict_start')
+
+        if self.args.save_poses:
+            path = pathlib.Path(self.dataset.files[0])
+
+            # load the info needed for projection
+            ossicles_path, facial_nerve_path, chorda_path, gt_pose_path = self.load_info(path.stem)
+            self.ossicles_path = ossicles_path
+
+            # convert the gt pose path to numpy array
+            self.gt_pose = np.load(gt_pose_path)
+
+            projection_save_path = str(self.save_dir / path.stem) + '_projection.mp4'
+            render_image_save_path = str(self.save_dir / path.stem) + '_render_image.mp4'
+            self.center = []
+            self.render_image = None
+
         for batch in self.dataset:
             self.run_callbacks('on_predict_batch_start')
             self.batch = batch
@@ -210,6 +332,7 @@ class BasePredictor:
                 p, im0 = (path[i], im0s[i].copy()) if self.source_type.webcam or self.source_type.from_img \
                     else (path, im0s.copy())
                 p = Path(p)
+                imc = copy.deepcopy(im0)
 
                 if self.args.verbose or self.args.save or self.args.save_txt or self.args.show:
                     s += self.write_results(i, self.results, (p, im, im0))
@@ -218,7 +341,17 @@ class BasePredictor:
                     self.show(p)
 
                 if self.args.save:
-                    self.save_preds(vid_cap, i, str(self.save_dir / p.name))
+                    res = self.annotator.result()
+                    self.save_preds(res, vid_cap, i, str(self.save_dir / p.name), self.vid_path, self.vid_writer)
+
+                if self.args.save_poses:
+                    if self.render_image is not None:
+                        project_image = self.project_pose_cpu(imc[...,::-1], self.gt_pose, ossicles_path, facial_nerve_path, chorda_path)
+                        # convert project_image RGB to BGR
+                        self.save_preds(project_image[..., ::-1], vid_cap, i, projection_save_path, self.projection_vid_path, self.projection_vid_writer)
+                        # self.render_image channel order is BGR, no need to convert
+                        self.save_preds(self.render_image, vid_cap, i, render_image_save_path, self.render_image_vid_path, self.render_image_vid_writer)
+
             self.run_callbacks('on_predict_batch_end')
             yield from self.results
 
@@ -267,7 +400,7 @@ class BasePredictor:
             cv2.resizeWindow(str(p), im0.shape[1], im0.shape[0])
         cv2.imshow(str(p), im0)
         cv2.waitKey(500 if self.batch[4].startswith('image') else 1)  # 1 millisecond
-
+    """
     def save_preds(self, vid_cap, idx, save_path):
         im0 = self.annotator.result()
         # save imgs
@@ -287,6 +420,25 @@ class BasePredictor:
                 save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
                 self.vid_writer[idx] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
             self.vid_writer[idx].write(im0)
+    """
+    def save_preds(self, image, vid_cap, idx, save_path, vid_path, vid_writer):
+        # save imgs
+        if self.dataset.mode == 'image':
+            cv2.imwrite(save_path, image)
+        else:  # 'video' or 'stream'
+            if vid_path[idx] != save_path:  # new video
+                vid_path[idx] = save_path
+                if isinstance(vid_writer[idx], cv2.VideoWriter):
+                    vid_writer[idx].release()  # release previous video writer
+                if vid_cap:  # video
+                    fps = int(vid_cap.get(cv2.CAP_PROP_FPS))  # integer required, floats produce error in MP4 codec
+                    w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                else:  # stream
+                    fps, w, h = 30, image.shape[1], image.shape[0]
+                save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
+                vid_writer[idx] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+            vid_writer[idx].write(image)
 
     def run_callbacks(self, event: str):
         for callback in self.callbacks.get(event, []):
