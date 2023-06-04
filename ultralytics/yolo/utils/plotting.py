@@ -384,6 +384,23 @@ def pad_xyxy(xyxy, size):
 
     assert (xyxy[0, 3] - xyxy[0, 1], xyxy[0, 2] - xyxy[0, 0]) == size
 
+    h, w = 1080, 1920 # image size for the ossicles task
+
+    # clipping the xyxy bbox inside the image shape
+    if xyxy[0, 0] < 0 or xyxy[0, 2] > w or xyxy[0, 1] < 0 or xyxy[0, 3] > h:
+        if xyxy[0, 0] < 0:
+            xyxy[0, 0] = 0
+            xyxy[0, 2] += xyxy[0, 0]
+        if xyxy[0, 2] > w:
+            xyxy[0, 0] -= (xyxy[0, 2] - w)
+            xyxy[0, 2] = w
+        if xyxy[0, 1] < 0:
+            xyxy[0, 1] = 0
+            xyxy[0, 3] += xyxy[0, 1]
+        if xyxy[0, 3] > h:
+            xyxy[0, 1] -= (xyxy[0, 3] - h)
+            xyxy[0, 3] = h
+
     return xyxy
 
 def output_to_target(output, max_det=300):

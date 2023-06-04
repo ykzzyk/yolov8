@@ -5,14 +5,14 @@ task: segment  # YOLO task, i.e. detect, segment, classify, pose
 mode: train  # YOLO mode, i.e. train, val, predict, export, track, benchmark
 
 # Train settings -------------------------------------------------------------------------------------------------------
-model:  # path to model file, i.e. yolov8n.pt, yolov8n.yaml
-data:  # path to data file, i.e. coco128.yaml
+model: 'E:\\GitHub\\yolov8\\pretrained_models\\yolov8l-seg.pt' # path to model file, i.e. yolov8n.pt, yolov8n.yaml
+data: ossicles.yaml # path to data file, i.e. coco128.yaml
 epochs: 500  # number of epochs to train for
 patience: 50  # epochs to wait for no observable improvement for early stopping of training
 batch: 16  # number of images per batch (-1 for AutoBatch)
 imgsz: 640  # size of input images as integer or w,h
 save: True  # save train checkpoints and predict results
-save_period: 200 # Save checkpoint every x epochs (disabled if < 1)
+save_period: 100 # Save checkpoint every x epochs (disabled if < 1)
 cache: False  # True/ram, disk or False. Use cache for data loading
 device:  # device to run on, i.e. cuda device=0 or device=0,1,2,3 or device=cpu
 workers: 8  # number of worker threads for data loading (per RANK if DDP)
@@ -20,7 +20,7 @@ project: 'E:\\GitHub\\yolov8\\runs\\segment' # project name
 name:  # experiment name, results saved to 'project/name' directory
 exist_ok: False  # whether to overwrite existing experiment
 pretrained: False  # whether to use a pretrained model
-optimizer: SGD  # optimizer to use, choices=['SGD', 'Adam', 'AdamW', 'RMSProp']
+optimizer: Adam  # optimizer to use, choices=['SGD', 'Adam', 'AdamW', 'RMSProp']
 verbose: True  # whether to print verbose output
 seed: 0  # random seed for reproducibility
 deterministic: True  # whether to enable deterministic mode
@@ -42,7 +42,7 @@ val: True  # validate/test during training
 split: val  # dataset split to use for validation, i.e. 'val', 'test' or 'train'
 save_json: False  # save results to JSON file
 save_hybrid: False  # save hybrid version of labels (labels + additional predictions)
-conf: 0.5 # object confidence threshold for detection (default 0.25 predict, 0.001 val)
+conf: 0.81 # object confidence threshold for detection (default 0.25 predict, 0.001 val)
 iou: 0.7  # intersection over union (IoU) threshold for NMS
 max_det: 300  # maximum number of detections per image
 half: False  # use half precision (FP16)
@@ -67,7 +67,7 @@ agnostic_nms: False  # class-agnostic NMS
 classes:  # filter results by class, i.e. class=0, or class=[0,2,3]
 retina_masks: False  # use high-resolution segmentation masks
 boxes: True  # Show boxes in segmentation predictions
-rescale_ratio: 0.2 # rescale 640 to 128
+rescale_ratio: 1 # rescale 640 to 128
 
 # Export settings ------------------------------------------------------------------------------------------------------
 format: torchscript  # format to export to

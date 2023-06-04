@@ -12,45 +12,14 @@ from ultralytics.yolo.utils import DEFAULT_CFG, ROOT, ops
 from ultralytics.yolo.utils.plotting import colors, save_one_box, save_info, xywh2xyxy, pad_xyxy, clip_coords, scale_image
 from ultralytics.yolo.v8.detect.predict import DetectionPredictor
 
-
-class SegmentationPredictor(DetectionPredictor):
-
-    def postprocess(self, preds, img, orig_imgs):
-        # TODO: filter by classes
-        p = ops.non_max_suppression(preds[0],
-                                    self.args.conf,
-                                    self.args.iou,
-                                    agnostic=self.args.agnostic_nms,
-                                    max_det=self.args.max_det,
-                                    nc=len(self.model.names),
-                                    classes=self.args.classes)
-        results = []
-        proto = preds[1][-1] if len(preds[1]) == 3 else preds[1]  # second output is len 3 if pt, but only 1 if exported
-        for i, pred in enumerate(p):
-            orig_img = orig_imgs[i] if isinstance(orig_imgs, list) else orig_imgs
-            path, _, _, _, _ = self.batch
-            img_path = path[i] if isinstance(path, list) else path
-            if not len(pred):  # save empty boxes
-                results.append(Results(orig_img=orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6]))
-                continue
-            if self.args.retina_masks:
-                if not isinstance(orig_imgs, torch.Tensor):
-                    pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
-                masks = ops.process_mask_native(proto[i], pred[:, 6:], pred[:, :4], orig_img.shape[:2])  # HWC
-            else:
-                masks = ops.process_mask(proto[i], pred[:, 6:], pred[:, :4], img.shape[2:], upsample=True)  # HWC
-                if not isinstance(orig_imgs, torch.Tensor):
-                    pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
-            results.append(
-                Results(orig_img=orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks))
-        return results
+class PosePredictor(DetectionPredictor):
     
     def create_color_mask_gt(self, mask, image):
         mask = np.expand_dims(mask, axis=-1)
-        app = vis.App(off_screen=True)
-        app.set_transformation_matrix(self.gt_pose)
-        app.load_meshes({'ossicles': self.ossicles_path})
-        color_mask = app.render_scene(render_image=False, render_objects=['ossicles'], return_depth_map=False)
+        self.app = vis.App(off_screen=True)
+        self.app.set_transformation_matrix(self.gt_pose)
+        self.app.load_meshes({'ossicles': self.ossicles_path})
+        color_mask = self.app.plot()
         color_maskxseg_mask = color_mask * mask
 
         # make the color_mask channel order is the same as the image
@@ -70,6 +39,7 @@ class SegmentationPredictor(DetectionPredictor):
         crop = im[int(xyxy[1]):int(xyxy[3]), int(xyxy[0]):int(xyxy[2])]
         return crop
 
+    """
     def create_2d_3d_pairs(self, color_mask, npts:int=-1, binary_mask=None):
 
         if binary_mask is None:
@@ -116,8 +86,9 @@ class SegmentationPredictor(DetectionPredictor):
         vtx = np.stack([r, g, b], axis=1)
         
         return vtx, rand_pts
+    """
 
-    def create_2d_3d_pairs_xyxy(self, color_mask, binary_mask, xyxy):
+    def create_2d_3d_pairs_xyxy_nocs(self, color_mask, binary_mask, xyxy):
         if isinstance(color_mask, np.ndarray):
             binary_mask = np.where(binary_mask != 0, 1, 0)
             binary_mask_bool = binary_mask.astype('bool')
@@ -187,6 +158,47 @@ class SegmentationPredictor(DetectionPredictor):
 
         return vtx, true_pts
 
+    def create_2d_3d_pairs_xyxy_latlon(self, color_mask, binary_mask, xyxy):
+
+        binary_mask = np.where(binary_mask != 0, 1, 0)
+        binary_mask_bool = binary_mask.astype('bool')
+        assert (binary_mask == binary_mask_bool).all(), "binary mask should be the same as binary mask bool"
+        
+        idx = np.where(binary_mask == 1)
+        # swap the points for opencv, maybe because they handle RGB image differently (RGB -> BGR in opencv)
+        idx = idx[:2][::-1]
+        x, y = idx[0], idx[1]
+        pts2d = np.stack((x, y), axis=1)
+
+        # pad the pts2d to 1920x1080 from 640x640
+        xyxy = xyxy.int() if isinstance(xyxy, torch.Tensor) else xyxy.astype('int32')
+        true_x, true_y = x + np.ones((x.shape)) * xyxy[0], y + np.ones((y.shape)) * xyxy[1]
+        pts2d_pad = np.stack((true_x.astype("int32"), true_y.astype("int32")), axis=1)
+
+        pts3d = []
+        
+        # Obtain the rg color
+        color = color_mask[pts2d[:,1], pts2d[:,0]][..., :2]
+        if np.max(color) > 1: color = color / 255
+        gx = color[:, 0]
+        gy = color[:, 1]
+
+        lat = np.array(self.app.latlon[..., 0])
+        lon = np.array(self.app.latlon[..., 1])
+        mesh = getattr(self.app, f'ossicles_mesh')
+        lonf = lon[mesh.faces]
+        msk = (np.sum(lonf>=0, axis=1)==3) & (np.sum(lat[mesh.faces]>=0, axis=1)==3)
+        for i in range(len(pts2d)):
+            pt = vis.utils.latLon2xyz(mesh, lat, lonf, msk, gx[i], gy[i])
+            pts3d.append(pt)
+
+        pts3d = np.array(pts3d).reshape((len(pts3d), 3))
+
+        pts2d = pts2d_pad.astype('float32')
+        pts3d = pts3d.astype('float32')
+
+        return pts3d, pts2d
+
     def predict_pose(self, pts3d, pts2d):
         flag = True
 
@@ -196,11 +208,44 @@ class SegmentationPredictor(DetectionPredictor):
         predicted_pose = vis.utils.solve_epnp_cv2(pts2d, pts3d, camera_intrinsics, camera_position)
 
         try:
-            assert np.isclose(predicted_pose, self.gt_pose, atol=20).all(), "predicted pose is not close to RT"
+            assert np.isclose(predicted_pose, self.gt_pose, atol=10).all(), "predicted pose is not close to RT"
+            self.predicted_pose = predicted_pose
         except AssertionError:
             flag = False
 
         return flag
+
+class SegmentationPredictor(PosePredictor):
+
+    def postprocess(self, preds, img, orig_imgs):
+        # TODO: filter by classes
+        p = ops.non_max_suppression(preds[0],
+                                    self.args.conf,
+                                    self.args.iou,
+                                    agnostic=self.args.agnostic_nms,
+                                    max_det=self.args.max_det,
+                                    nc=len(self.model.names),
+                                    classes=self.args.classes)
+        results = []
+        proto = preds[1][-1] if len(preds[1]) == 3 else preds[1]  # second output is len 3 if pt, but only 1 if exported
+        for i, pred in enumerate(p):
+            orig_img = orig_imgs[i] if isinstance(orig_imgs, list) else orig_imgs
+            path, _, _, _, _ = self.batch
+            img_path = path[i] if isinstance(path, list) else path
+            if not len(pred):  # save empty boxes
+                results.append(Results(orig_img=orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6]))
+                continue
+            if self.args.retina_masks:
+                if not isinstance(orig_imgs, torch.Tensor):
+                    pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+                masks = ops.process_mask_native(proto[i], pred[:, 6:], pred[:, :4], orig_img.shape[:2])  # HWC
+            else:
+                masks = ops.process_mask(proto[i], pred[:, 6:], pred[:, :4], img.shape[2:], upsample=True)  # HWC
+                if not isinstance(orig_imgs, torch.Tensor):
+                    pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+            results.append(
+                Results(orig_img=orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks))
+        return results
 
     def write_results(self, idx, results, batch):
         p, im, im0 = batch
@@ -318,24 +363,29 @@ class SegmentationPredictor(DetectionPredictor):
                         binary_mask_crop = self.crop_image(det.xyxy.view(-1), binary_maskxseg_mask)
                         render_image_crop = self.crop_image(det.xyxy.view(-1), self.render_image)
 
-                        # downscale the cropped color mask, color_mask_crop shape is (640, 640, 3)
-                        color_mask_crop_downscale = cv2.resize(color_mask_crop, (int(color_mask_crop.shape[0] * self.args.rescale_ratio), int(color_mask_crop.shape[1] * self.args.rescale_ratio)), interpolation = cv2.INTER_AREA) 
-                        binary_mask_crop_downscale = cv2.resize(binary_mask_crop, (int(color_mask_crop.shape[0] * self.args.rescale_ratio), int(color_mask_crop.shape[1] * self.args.rescale_ratio)), interpolation = cv2.INTER_AREA)
+                        if self.args.rescale_ratio != 1:
+                            # downscale the cropped color mask, color_mask_crop shape is (640, 640, 3)
+                            color_mask_crop_downscale = cv2.resize(color_mask_crop, (int(color_mask_crop.shape[0] * self.args.rescale_ratio), int(color_mask_crop.shape[1] * self.args.rescale_ratio)), interpolation = cv2.INTER_AREA) 
+                            binary_mask_crop_downscale = cv2.resize(binary_mask_crop, (int(color_mask_crop.shape[0] * self.args.rescale_ratio), int(color_mask_crop.shape[1] * self.args.rescale_ratio)), interpolation = cv2.INTER_AREA)
+                            # upscale the cropped color mask to the original size
+                            color_mask_crop = cv2.resize(color_mask_crop_downscale, (640, 640), interpolation = cv2.INTER_AREA)
+                            binary_mask_crop = cv2.resize(binary_mask_crop_downscale, (640, 640), interpolation = cv2.INTER_AREA)
 
-                        # upscale the cropped color mask to the original size
-                        color_mask_crop = cv2.resize(color_mask_crop_downscale, (640, 640), interpolation = cv2.INTER_AREA)
-                        binary_mask_crop = cv2.resize(binary_mask_crop_downscale, (640, 640), interpolation = cv2.INTER_AREA)
-                        
-                        # test the cropped and segmented mask
-                        p3d_crop, p2d_crop = self.create_2d_3d_pairs_xyxy(color_mask_crop, binary_mask_crop, det.xyxy.view(-1).cpu().numpy())
-                        flag = self.predict_pose(pts3d=p3d_crop, pts2d=p2d_crop)
+                        if self.app.nocs_color:   
+                            # test the cropped and segmented mask
+                            p3d, p2d = self.create_2d_3d_pairs_xyxy_nocs(color_mask_crop, binary_mask_crop, det.xyxy.view(-1).cpu().numpy())
+                        else:
+                            p3d, p2d = self.create_2d_3d_pairs_xyxy_latlon(color_mask_crop, binary_mask_crop, det.xyxy.view(-1).cpu().numpy())
+
+                        flag = self.predict_pose(pts3d=p3d, pts2d=p2d)
                         
                     if flag:
                         name = save_info(image=imc[..., ::-1], image_file = self.save_dir / 'images' / self.model.model.names[c] / f'{self.data_path.stem}.png')
                         color_mask_name = save_info(image=color_mask, image_file = self.save_dir / 'color_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')
                         seg_mask_name = save_info(image=seg_mask, image_file = self.save_dir / 'seg_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')    
+                        color_seg_mask_name = save_info(image=color_maskxseg_mask, image_file = self.save_dir / 'color_seg_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')
                         render_image_name = save_info(image=render_image_crop[..., ::-1], image_file = self.save_dir / 'render_images_crop' / self.model.model.names[c] / f'{self.data_path.stem}.png')    
-                        assert name == color_mask_name == seg_mask_name == render_image_name, "imc name is not the same as the color_mask / render_image_crop name!"
+                        assert name == color_mask_name == seg_mask_name == color_seg_mask_name == render_image_name, "imc name is not the same as the color_mask / render_image_crop name!"
                         
                         self.info_container[name] = {}
                         self.info_container[name]['xyxy'] = det.xyxy.view(-1).tolist()
