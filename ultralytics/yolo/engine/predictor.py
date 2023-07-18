@@ -71,8 +71,6 @@ class CustomPredictor:
         """
 
         self.args = get_cfg(cfg, overrides)
-        # store the information for segmentation mask and two representation of BBox
-        self.info_container = defaultdict(dict)
 
     def load_info(self, pathname):
 
@@ -84,8 +82,15 @@ class CustomPredictor:
         facial_nerve_path = getattr(config, f"FACIAL_NERVE_MESH_PATH_{id}_{side}")
         chorda_path = getattr(config, f"CHORDA_MESH_PATH_{id}_{side}")
         scala_tympani_path = getattr(config, f"SCALA_TYMPANI_MESH_PATH_{id}_{side}")
+
+        with open(str(self.save_dir / "meshes" / "mesh_path.txt"), 'w') as f:
+            f.write(str(ossicles_path) + '\n')
+            f.write(str(facial_nerve_path) + '\n')
+            f.write(str(chorda_path) + '\n')
+            f.write(str(scala_tympani_path) + '\n')
+
         gt_pose_path = getattr(config, f"gt_pose_{id}_{side}")
-        
+
         return ossicles_path, facial_nerve_path, chorda_path, scala_tympani_path, gt_pose_path
 
     def project_pose_cpu(self, image_source, predicted_pose, ossicles_path, facial_nerve_path, chorda_path, scala_tympani_path):
@@ -127,6 +132,8 @@ class BasePredictor(CustomPredictor):
         project = self.args.project or Path(SETTINGS['runs_dir']) / self.args.task
         name = self.args.name or f'{self.args.mode}'
         self.save_dir = increment_path(Path(project) / name, exist_ok=self.args.exist_ok)
+        os.makedirs(self.save_dir / "videos", exist_ok=True)
+        os.makedirs(self.save_dir / "meshes", exist_ok=True)
         if self.args.conf is None:
             self.args.conf = 0.5  # default conf=0.5
         self.done_warmup = False
@@ -206,9 +213,6 @@ class BasePredictor(CustomPredictor):
         # setup source every time predict is called
         self.setup_source(source if source is not None else self.args.source)
 
-        # check if save_dir/ label file exists
-        if self.args.save or self.args.save_txt:
-            (self.save_dir / 'labels' if self.args.save_txt else self.save_dir).mkdir(parents=True, exist_ok=True)
         # warmup model
         if not self.done_warmup:
             self.model.warmup(imgsz=(1 if self.model.pt or self.model.triton else self.dataset.bs, 3, *self.imgsz))
@@ -216,6 +220,9 @@ class BasePredictor(CustomPredictor):
 
         self.seen, self.windows, self.dt, self.batch = 0, [], (ops.Profile(), ops.Profile(), ops.Profile()), None
         self.run_callbacks('on_predict_start')
+
+        # path = pathlib.Path(self.dataset.files[0])
+        # ossicles_path, facial_nerve_path, chorda_path, scala_tympani_path, gt_pose = self.load_info(path.stem)
 
         if self.args.save_poses:
             path = pathlib.Path(self.dataset.files[0])
@@ -225,8 +232,8 @@ class BasePredictor(CustomPredictor):
             self.ossicles_path = ossicles_path
             self.gt_pose = gt_pose
 
-            projection_save_path = str(self.save_dir / path.stem) + '_projection.mp4'
-            render_image_save_path = str(self.save_dir / path.stem) + '_render_image.mp4'
+            projection_save_path = str(self.save_dir / "videos" / path.stem) + '_projection.mp4'
+            render_image_save_path = str(self.save_dir / "videos" / path.stem) + '_render_image.mp4'
             self.center = []
             self.render_image = None
 
@@ -273,7 +280,7 @@ class BasePredictor(CustomPredictor):
 
                 if self.args.save:
                     res = self.annotator.result()
-                    self.save_preds(res, vid_cap, i, str(self.save_dir / p.name), self.vid_path, self.vid_writer)
+                    self.save_preds(res, vid_cap, i, str(self.save_dir / "videos" / p.name), self.vid_path, self.vid_writer)
 
                 if self.args.save_poses:
                     if self.render_image is not None:
@@ -290,10 +297,6 @@ class BasePredictor(CustomPredictor):
             if self.args.verbose:
                 LOGGER.info(f'{s}{self.dt[1].dt * 1E3:.1f}ms')
 
-        if self.args.save:
-            with open(pathlib.Path(self.txt_path).parent / "info.json", "w") as f:
-                json.dump(self.info_container, f, indent=4)
-
         # Release assets
         if isinstance(self.vid_writer[-1], cv2.VideoWriter):
             self.vid_writer[-1].release()  # release final video writer
@@ -303,11 +306,7 @@ class BasePredictor(CustomPredictor):
             t = tuple(x.t / self.seen * 1E3 for x in self.dt)  # speeds per image
             LOGGER.info(f'Speed: %.1fms preprocess, %.1fms inference, %.1fms postprocess per image at shape '
                         f'{(1, 3, *self.imgsz)}' % t)
-        if self.args.save or self.args.save_txt or self.args.save_crop:
-            nl = len(list(self.save_dir.glob('labels/*.txt')))  # number of labels
-            s = f"\n{nl} label{'s' * (nl > 1)} saved to {self.save_dir / 'labels'}" if self.args.save_txt else ''
-            LOGGER.info(f"Results saved to {colorstr('bold', self.save_dir)}{s}")
-
+        
         self.run_callbacks('on_predict_end')
 
     def setup_model(self, model, verbose=True):

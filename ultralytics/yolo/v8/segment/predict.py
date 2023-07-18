@@ -306,7 +306,7 @@ class SegmentationPredictor(PosePredictor):
             c, conf, id = int(d.cls), float(d.conf), None if d.id is None else int(d.id.item())
             if self.args.save_txt:  # Write to file
                 if len(mask.masks) != 0:
-                    seg_points = mask.xyn[len(det) - j - 1].copy().reshape(-1) # save the segmentation points
+                    seg_points = mask.xyn[len(det) - j - 1].copy() # save the segmentation points
                     original_masks = mask.masks.clone().permute(1,2,0).detach().cpu().numpy()
                     original_masks = scale_image(original_masks.shape, original_masks, (1080, 1920, 1))
                     (h, w, _) = np.where(original_masks == 1)
@@ -318,11 +318,11 @@ class SegmentationPredictor(PosePredictor):
                         bbox_xyxy = det.xyxy.clone().cpu().numpy().reshape(-1)
                         bbox_xywh = det.xywh.clone().cpu().numpy().reshape(-1)
 
-                        name = pathlib.Path(self.txt_path + ".json").stem
-                        self.info_container[name] = {}
-                        self.info_container[name]['seg'] = seg_points.tolist()
-                        self.info_container[name]['bbox_xyxy'] = bbox_xyxy.tolist()
-                        self.info_container[name]['bbox_xywh'] = bbox_xywh.tolist()
+                        seg_points_name = save_info(obj=seg_points, file = self.save_dir / 'seg_coords' / self.model.model.names[c] / f'{self.data_path.stem}.npy')
+                        xyxy_name = save_info(obj=bbox_xyxy, file = self.save_dir / 'xyxy' / self.model.model.names[c] / f'{self.data_path.stem}.npy')
+                        xywh_name = save_info(obj=bbox_xywh, file = self.save_dir / 'xywh' / self.model.model.names[c] / f'{self.data_path.stem}.npy')
+                        assert seg_points_name == xyxy_name == xywh_name, "names are not the same!"
+
                 else:
                     seg_mask = None
        
@@ -361,7 +361,6 @@ class SegmentationPredictor(PosePredictor):
                     if np.sum(color_maskxseg_mask) != 0:
                         color_mask_crop = self.crop_image(det.xyxy.view(-1), color_maskxseg_mask)
                         binary_mask_crop = self.crop_image(det.xyxy.view(-1), binary_maskxseg_mask)
-                        render_image_crop = self.crop_image(det.xyxy.view(-1), self.render_image)
 
                         if self.args.rescale_ratio != 1:
                             # downscale the cropped color mask, color_mask_crop shape is (640, 640, 3)
@@ -380,19 +379,17 @@ class SegmentationPredictor(PosePredictor):
                         flag = self.predict_pose(pts3d=p3d, pts2d=p2d)
                         
                     if flag:
-                        name = save_info(image=imc[..., ::-1], image_file = self.save_dir / 'images' / self.model.model.names[c] / f'{self.data_path.stem}.png')
-                        color_mask_name = save_info(image=color_mask, image_file = self.save_dir / 'color_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')
-                        seg_mask_name = save_info(image=seg_mask, image_file = self.save_dir / 'seg_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')    
-                        color_seg_mask_name = save_info(image=color_maskxseg_mask, image_file = self.save_dir / 'color_seg_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')
-                        render_image_name = save_info(image=render_image_crop[..., ::-1], image_file = self.save_dir / 'render_images_crop' / self.model.model.names[c] / f'{self.data_path.stem}.png')    
-                        assert name == color_mask_name == seg_mask_name == color_seg_mask_name == render_image_name, "imc name is not the same as the color_mask / render_image_crop name!"
+                        # save image
+                        name = save_info(obj=imc[..., ::-1], file = self.save_dir / 'images' / self.model.model.names[c] / f'{self.data_path.stem}.png')
+                        color_mask_name = save_info(obj=color_mask, file = self.save_dir / 'color_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')
+                        seg_mask_name = save_info(obj=seg_mask, file = self.save_dir / 'seg_masks' / self.model.model.names[c] / f'{self.data_path.stem}.png')    
+                        # save numpy array
+                        seg_points_name = save_info(obj=seg_points, file = self.save_dir / 'seg_coords' / self.model.model.names[c] / f'{self.data_path.stem}.npy')
+                        xyxy_name = save_info(obj=det.xyxy.view(-1).cpu().detach().numpy(), file = self.save_dir / 'xyxy' / self.model.model.names[c] / f'{self.data_path.stem}.npy')
+                        xywh_name = save_info(obj=det.xywh.view(-1).cpu().detach().numpy(), file = self.save_dir / 'xywh' / self.model.model.names[c] / f'{self.data_path.stem}.npy')
+                        gt_pose_name = save_info(obj=self.gt_pose, file = self.save_dir / 'poses' / self.model.model.names[c] / f'{self.data_path.stem}.npy')
+                        assert name == color_mask_name == seg_mask_name == seg_points_name == xyxy_name == xywh_name == gt_pose_name, "names are not the same!"
                         
-                        self.info_container[name] = {}
-                        self.info_container[name]['xyxy'] = det.xyxy.view(-1).tolist()
-                        self.info_container[name]['xywh'] = det.xywh.view(-1).tolist()
-                        self.info_container[name]['seg'] = seg_points.tolist()
-                        self.info_container[name]['gt_pose'] = self.gt_pose.tolist()
-
                     else:
                         self.render_image = None
 

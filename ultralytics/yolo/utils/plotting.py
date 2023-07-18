@@ -225,15 +225,17 @@ def save_one_box(xyxy, im, file=Path('im.jpg'), save=True):
         Image.fromarray(crop[..., ::-1]).save(f)  # save RGB
     return crop
 
-def save_info(image, image_file):
+def save_info(obj, file):
 
-    if image is not None:
+    if obj is not None:
         # make directory
-        image_file.parent.mkdir(parents=True, exist_ok=True)
-        f = str(increment_path(image_file).with_suffix('.png'))
+        file.parent.mkdir(parents=True, exist_ok=True)
+        f = str(increment_path(file).with_suffix(file.suffix))
         filename = Path(f).stem
-        Image.fromarray(image).save(f)  # save RGB
-        
+        if file.suffix == '.png':
+            Image.fromarray(obj).save(f)  # save RGB
+        elif file.suffix == '.npy':
+            np.save(f, obj)
     else:
         filename = None
 
